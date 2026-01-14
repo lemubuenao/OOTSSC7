@@ -37,60 +37,46 @@
     <!-- Firebase SDK (Modular) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, updateDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // =========================================================
-        // ATENÇÃO: COLA AS TUAS CREDENCIAIS DO FIREBASE AQUI ABAIXO
-        // PARA QUE O SITE FUNCIONE NO GITHUB PAGES
-        // =========================================================
-        const firebaseConfig = {
-            apiKey: "", 
-            authDomain: "",
-            projectId: "",
-            storageBucket: "",
-            messagingSenderId: "",
-            appId: ""
-        };
-
-        // Fallback para o ambiente de testes (Canvas)
-        const config = (firebaseConfig.apiKey === "") && (typeof __firebase_config !== 'undefined') 
+        // CONFIGURAÇÃO FIREBASE
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
             ? JSON.parse(__firebase_config) 
-            : firebaseConfig;
+            : {
+                apiKey: "", 
+                authDomain: "",
+                projectId: "",
+                storageBucket: "",
+                messagingSenderId: "",
+                appId: ""
+            };
 
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'waves-ssc7-lages';
-        
-        let app, auth, db;
-        let isConfigured = false;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
 
-        if (config.apiKey !== "") {
-            app = initializeApp(config);
-            auth = getAuth(app);
-            db = getFirestore(app);
-            isConfigured = true;
-        }
-
-        // Disponibilizar para o script Babel de forma global
+        // Disponibilizar para o script Babel
         window.FirebaseAPI = { 
             auth, db, appId, serverTimestamp, doc, updateDoc, setDoc, onSnapshot, 
-            signInAnonymously, onAuthStateChanged, isConfigured 
+            signInAnonymously, signInWithCustomToken, onAuthStateChanged 
         };
     </script>
 
     <!-- Lógica da Aplicação -->
     <script type="text/babel">
         const { useState, useEffect, useCallback, useRef } = React;
+        const { auth, db, appId, serverTimestamp, doc, updateDoc, setDoc, onSnapshot, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseAPI;
 
         const App = () => {
-            const api = window.FirebaseAPI;
-            
             const [user, setUser] = useState(null);
             const [view, setView] = useState('timer');
             const [isMuted, setIsMuted] = useState(false);
             const [systemTime, setSystemTime] = useState('');
             const [availableVoices, setAvailableVoices] = useState([]);
             const [selectedVoiceName, setSelectedVoiceName] = useState('');
-            const [connectionStatus, setConnectionStatus] = useState('A verificar...');
+            const [connectionStatus, setConnectionStatus] = useState('A autenticar...');
 
             const INITIAL_STATE = {
                 activeWaveIndex: 0,
@@ -116,106 +102,121 @@
             const [syncData, setSyncData] = useState(INITIAL_STATE);
             const [timeLeft, setTimeLeft] = useState(INITIAL_STATE.secondsRemainingOnPause);
             const lastAnnouncedTrigger = useRef(null);
+            const lastAutoStartTriggered = useRef("");
 
-            // Ícones Lucide
-            useEffect(() => { if (window.lucide) window.lucide.createIcons(); });
-
-            // 1. Autenticação (Regra 3)
+            // 1. Autenticação (Regra 3 - Auth antes de Queries)
             useEffect(() => {
-                if (!api.isConfigured) {
-                    setConnectionStatus('Erro: Firebase não configurado');
-                    return;
-                }
-
                 const initAuth = async () => {
                     try {
-                        setConnectionStatus('A autenticar...');
-                        await api.signInAnonymously(api.auth);
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
                     } catch (e) {
-                        setConnectionStatus('Erro na Autenticação');
-                        console.error(e);
+                        setConnectionStatus('Erro de Autenticação');
                     }
                 };
-
                 initAuth();
-                api.onAuthStateChanged(api.auth, (u) => {
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
                     setUser(u);
-                    if(u) setConnectionStatus('Ligado à Nuvem');
+                    if (u) setConnectionStatus('Ligado à Nuvem');
                 });
-                
-                // Carregar Vozes
+                return () => unsubscribe();
+            }, []);
+
+            // Carregar Vozes do Sistema
+            useEffect(() => {
                 const loadVoices = () => {
                     const v = window.speechSynthesis.getVoices().filter(x => x.lang.startsWith('pt'));
                     setAvailableVoices(v);
-                    if (v.length > 0) setSelectedVoiceName(v[0].name);
+                    if (v.length > 0 && !selectedVoiceName) setSelectedVoiceName(v[0].name);
                 };
                 loadVoices();
                 window.speechSynthesis.onvoiceschanged = loadVoices;
             }, []);
 
-            // 2. Sincronização em Tempo Real (Regra 1)
+            // 2. Sincronização Cloud (Regra 1 - Caminho Estrito)
             useEffect(() => {
-                if (!user || !api.isConfigured) return;
-
-                // Documento fixo: /artifacts/{appId}/public/data/waves_sync/global
-                const docRef = api.doc(api.db, 'artifacts', api.appId, 'public', 'data', 'waves_sync', 'global');
+                if (!user) return;
                 
-                const unsubscribe = api.onSnapshot(docRef, (snap) => {
+                // Caminho rigoroso: /artifacts/{appId}/public/data/{collectionName}/{docId}
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'waves_sync', 'global');
+                
+                const unsubscribe = onSnapshot(docRef, (snap) => {
                     if (snap.exists()) {
                         setSyncData(snap.data());
                     } else {
-                        api.setDoc(docRef, INITIAL_STATE);
+                        // Criar documento inicial com permissões
+                        setDoc(docRef, INITIAL_STATE);
                     }
                 }, (err) => {
-                    setConnectionStatus('Erro de Sincronização');
-                    console.error(err);
+                    setConnectionStatus('Erro de Permissão');
                 });
 
                 return () => unsubscribe();
             }, [user]);
 
-            // 3. Lógica do Temporizador
+            // 3. Relógio e Início Automático
             useEffect(() => {
-                const interval = setInterval(() => {
-                    const now = Date.now();
-                    const nowStr = new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
+                const clockTimer = setInterval(() => {
+                    const now = new Date();
+                    const nowStr = now.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
                     setSystemTime(nowStr);
 
+                    if (syncData.isAutoStartEnabled && !syncData.isRunning && syncData.activeWaveIndex === 0 && timeLeft === syncData.waves[0].duration) {
+                        if (nowStr === syncData.scheduledStartTime && lastAutoStartTriggered.current !== nowStr) {
+                            lastAutoStartTriggered.current = nowStr;
+                            handleToggleTimer();
+                        }
+                    }
+                }, 1000);
+                return () => clearInterval(clockTimer);
+            }, [syncData, timeLeft, user]);
+
+            // 4. Temporizador Sincronizado
+            useEffect(() => {
+                const timerInterval = setInterval(() => {
                     if (syncData.isRunning && syncData.serverStartTime) {
-                        const start = syncData.serverStartTime?.toMillis ? syncData.serverStartTime.toMillis() : syncData.serverStartTime;
-                        const elapsed = Math.floor((now - start) / 1000);
-                        const remaining = Math.max(0, syncData.secondsRemainingOnPause - elapsed);
+                        const now = Date.now();
+                        const startMillis = syncData.serverStartTime?.toMillis ? syncData.serverStartTime.toMillis() : syncData.serverStartTime;
+                        const elapsedSeconds = Math.floor((now - startMillis) / 1000);
+                        const remaining = Math.max(0, syncData.secondsRemainingOnPause - elapsedSeconds);
+                        
                         setTimeLeft(remaining);
                         
-                        if (remaining === 0) handleAutoWaveComplete();
+                        if (remaining === 0) {
+                            handleAutoWaveComplete();
+                        }
                     } else {
                         setTimeLeft(syncData.secondsRemainingOnPause);
                     }
-
-                    // Auto-Início
-                    if (syncData.isAutoStartEnabled && !syncData.isRunning && syncData.activeWaveIndex === 0 && timeLeft === syncData.waves[0].duration) {
-                        if (nowStr === syncData.scheduledStartTime) handleToggleTimer();
-                    }
                 }, 1000);
-                return () => clearInterval(interval);
+                return () => clearInterval(timerInterval);
             }, [syncData]);
 
-            // 4. Alertas
+            // 5. Alertas Sonoros
             useEffect(() => {
                 if (!syncData.isRunning || timeLeft <= 0) return;
-                const trigger = syncData.alarmTriggerMinutes * 60;
-                if (timeLeft <= trigger) {
-                    if ((trigger - timeLeft) % syncData.alarmRepeatSeconds === 0 && lastAnnouncedTrigger.current !== timeLeft) {
+                const triggerSeconds = syncData.alarmTriggerMinutes * 60;
+                
+                if (timeLeft <= triggerSeconds) {
+                    const elapsedFromTrigger = triggerSeconds - timeLeft;
+                    if (elapsedFromTrigger % syncData.alarmRepeatSeconds === 0 && lastAnnouncedTrigger.current !== timeLeft) {
                         lastAnnouncedTrigger.current = timeLeft;
                         if (syncData.isHornEnabled) playHorn();
-                        const mins = Math.floor(timeLeft / 60);
-                        const secs = timeLeft % 60;
                         setTimeout(() => speak(`ATENÇÃO, ${syncData.waves[syncData.activeWaveIndex].name} prestes a acabar.`), 800);
                     }
                 }
             }, [timeLeft, syncData.isRunning]);
 
+            // Inicializar ícones
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
+            });
+
             const playHorn = () => {
+                if (isMuted || !syncData.isHornEnabled) return;
                 try {
                     const ctx = new (window.AudioContext || window.webkitAudioContext)();
                     const osc1 = ctx.createOscillator();
@@ -226,28 +227,33 @@
                     gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.8);
                     osc1.connect(gain); gain.connect(ctx.destination);
                     osc1.start(); osc1.stop(ctx.currentTime + 0.8);
+                    setTimeout(() => ctx.close(), 1000);
                 } catch(e) {}
             };
 
             const speak = (text) => {
-                if (isMuted) return;
+                if (isMuted || !text) return;
                 window.speechSynthesis.cancel();
                 const utter = new SpeechSynthesisUtterance(text);
                 const voice = availableVoices.find(v => v.name === selectedVoiceName);
                 if (voice) utter.voice = voice;
+                else utter.lang = 'pt-PT';
                 window.speechSynthesis.speak(utter);
             };
 
             const updateCloud = async (updates) => {
-                if (!user || !api.isConfigured) return;
-                const docRef = api.doc(api.db, 'artifacts', api.appId, 'public', 'data', 'waves_sync', 'global');
-                try { await api.updateDoc(docRef, updates); } catch(e) { console.error(e); }
+                if (!user) return;
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'waves_sync', 'global');
+                try { await updateDoc(docRef, updates); } catch(e) {}
             };
 
             const handleToggleTimer = () => {
                 if (syncData.isRunning) {
                     updateCloud({ isRunning: false, secondsRemainingOnPause: timeLeft });
                 } else {
+                    if (timeLeft === syncData.waves[syncData.activeWaveIndex].duration) {
+                        speak(`Iniciando a ${syncData.waves[syncData.activeWaveIndex].name}`);
+                    }
                     updateCloud({ isRunning: true, serverStartTime: Date.now() });
                 }
             };
@@ -260,13 +266,23 @@
             };
 
             const handleReset = () => {
-                updateCloud({ isRunning: false, activeWaveIndex: 0, secondsRemainingOnPause: syncData.waves[0].duration, serverStartTime: null });
+                updateCloud({
+                    isRunning: false,
+                    activeWaveIndex: 0,
+                    secondsRemainingOnPause: syncData.waves[0].duration,
+                    serverStartTime: null
+                });
             };
 
             const handleNextWave = () => {
-                const next = syncData.activeWaveIndex + 1;
-                if (next < syncData.waves.length) {
-                    updateCloud({ activeWaveIndex: next, secondsRemainingOnPause: syncData.waves[next].duration, isRunning: false, serverStartTime: null });
+                const nextIdx = syncData.activeWaveIndex + 1;
+                if (nextIdx < syncData.waves.length) {
+                    updateCloud({
+                        activeWaveIndex: nextIdx,
+                        secondsRemainingOnPause: syncData.waves[nextIdx].duration,
+                        isRunning: false,
+                        serverStartTime: null
+                    });
                 }
             };
 
@@ -274,63 +290,34 @@
             const currentWave = syncData.waves[syncData.activeWaveIndex];
             const progress = ((currentWave.duration - timeLeft) / currentWave.duration) * 100;
 
-            if (!api.isConfigured && window.location.hostname !== 'localhost') {
-                return (
-                    <div className="flex items-center justify-center min-h-screen p-6 text-center">
-                        <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md">
-                            <i data-lucide="alert-circle" className="w-16 h-16 text-red-500 mx-auto mb-4"></i>
-                            <h2 className="text-2xl font-bold mb-4">Firebase Não Configurado</h2>
-                            <p className="text-slate-600 mb-6">Para usar no GitHub, precisas de colar as tuas chaves do Firebase no código do ficheiro index.html.</p>
-                            <div className="text-left bg-slate-100 p-4 rounded text-xs font-mono overflow-auto">
-                                1. Vai ao Console do Firebase<br/>
-                                2. Configurações do Projeto > Seus Apps<br/>
-                                3. Copia o objeto firebaseConfig<br/>
-                                4. Cola no topo do ficheiro index.html
-                            </div>
-                        </div>
-                    </div>
-                );
-            }
-
             if (view === 'setup') {
                 return (
                     <div className="p-6 md:p-12 max-w-2xl mx-auto min-h-screen">
                         <button onClick={() => setView('timer')} className="flex items-center gap-2 mb-8 text-slate-500 hover:text-slate-900 font-bold uppercase text-xs">
-                            <i data-lucide="arrow-left" className="w-4 h-4"></i> Voltar
+                            <i data-lucide="arrow-left" className="w-4 h-4"></i> Voltar ao Painel
                         </button>
                         <h1 className="text-3xl font-black mb-8 text-slate-900 uppercase">Configuração Cloud</h1>
-                        
-                        <div className="ml-card border border-slate-200 p-8 rounded-xl space-y-6">
-                            <div className="bg-slate-50 p-4 rounded-lg border border-ml-blue/20">
-                                <label className="text-[10px] font-black text-slate-400 uppercase mb-2 block tracking-widest">Voz do Sistema (Local)</label>
-                                <select value={selectedVoiceName} onChange={e => setSelectedVoiceName(e.target.value)} className="w-full p-3 rounded-lg border border-slate-300 font-bold text-sm outline-none focus:border-ml-blue">
-                                    {availableVoices.map(v => <option key={v.name}>{v.name}</option>)}
-                                </select>
+                        <div className="ml-card border border-slate-200 p-8 rounded-xl shadow-sm space-y-8">
+                            <div className="bg-slate-50 p-6 rounded-lg border border-[#3483FA]/20 space-y-4">
+                                <h3 className="text-xs font-black text-[#3483FA] flex items-center gap-2 uppercase tracking-widest">
+                                    <i data-lucide="calendar" className="w-4 h-4"></i> Início Turno
+                                </h3>
+                                <div className="flex gap-4">
+                                    <input type="time" value={syncData.scheduledStartTime} onChange={(e) => updateCloud({ scheduledStartTime: e.target.value })} className="bg-white p-3 rounded-lg border border-slate-300 focus:border-[#3483FA] outline-none font-bold text-xl w-full" />
+                                    <button onClick={() => updateCloud({ isAutoStartEnabled: !syncData.isAutoStartEnabled })} className={`px-6 rounded-lg font-bold border transition-all ${syncData.isAutoStartEnabled ? 'bg-[#3483FA] text-white border-[#3483FA]' : 'bg-white text-slate-400 border-slate-200'}`}>
+                                        Auto-Start: {syncData.isAutoStartEnabled ? 'ON' : 'OFF'}
+                                    </button>
+                                </div>
                             </div>
-
                             <div className="grid grid-cols-2 gap-4">
-                                <div className="bg-slate-50 p-4 rounded-lg">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">Alerta (min)</label>
-                                    <input type="number" step="0.5" value={syncData.alarmTriggerMinutes} onChange={e => updateCloud({ alarmTriggerMinutes: parseFloat(e.target.value) })} className="w-full p-2 border-b-2 border-slate-300 bg-transparent font-bold text-lg outline-none" />
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Alerta (min):</label>
+                                    <input type="number" step="0.5" value={syncData.alarmTriggerMinutes} onChange={e => updateCloud({ alarmTriggerMinutes: parseFloat(e.target.value) })} className="w-full p-3 rounded-lg border border-slate-300 font-bold" />
                                 </div>
-                                <div className="bg-slate-50 p-4 rounded-lg">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">Repete (seg)</label>
-                                    <input type="number" value={syncData.alarmRepeatSeconds} onChange={e => updateCloud({ alarmRepeatSeconds: parseInt(e.target.value) })} className="w-full p-2 border-b-2 border-slate-300 bg-transparent font-bold text-lg outline-none" />
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Repete (seg):</label>
+                                    <input type="number" value={syncData.alarmRepeatSeconds} onChange={e => updateCloud({ alarmRepeatSeconds: parseInt(e.target.value) })} className="w-full p-3 rounded-lg border border-slate-300 font-bold" />
                                 </div>
-                            </div>
-
-                            <div className="pt-4 border-t space-y-3">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center mb-4">Ajustar Tempos (Minutos)</h3>
-                                {syncData.waves.map((w, i) => (
-                                    <div key={w.id} className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
-                                        <div className="w-20"><p className="text-xs font-black text-slate-700">{w.name}</p></div>
-                                        <input type="number" value={w.duration / 60} onChange={(e) => {
-                                            const newWaves = [...syncData.waves];
-                                            newWaves[i].duration = parseFloat(e.target.value) * 60;
-                                            updateCloud({ waves: newWaves });
-                                        }} className="flex-1 p-2 rounded border text-center font-black text-ml-blue outline-none" />
-                                    </div>
-                                ))}
                             </div>
                         </div>
                     </div>
@@ -340,8 +327,8 @@
             return (
                 <div className="p-4 md:p-12 max-w-5xl mx-auto min-h-screen" onClick={() => speak('')}>
                     <header className="flex justify-between items-center mb-6 bg-[#FFE600] p-5 rounded-xl border-b-2 border-yellow-400 shadow-sm">
-                        <div className="flex items-center gap-4">
-                            <div className="bg-white p-2 rounded-lg"><i data-lucide="package" className="w-7 h-7 text-slate-900"></i></div>
+                        <div className="flex items-center gap-4 text-slate-900">
+                            <div className="bg-white p-2 rounded-lg shadow-sm"><i data-lucide="package" className="w-7 h-7"></i></div>
                             <div>
                                 <h1 className="text-2xl font-black uppercase tracking-tighter leading-none">Waves SSC7</h1>
                                 <p className="text-slate-800 text-[10px] font-black uppercase tracking-widest mt-1">Lages, SC • {connectionStatus}</p>
@@ -363,25 +350,25 @@
                                 </span>
                             </div>
                             
-                            <div className={`text-[10rem] md:text-[14rem] font-black my-4 font-mono tracking-tighter leading-none transition-all ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'text-red-500' : 'text-slate-900'}`}>
+                            <div className={`text-[11rem] md:text-[14rem] font-black my-4 font-mono tracking-tighter leading-none transition-all ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'text-red-500 scale-105' : 'text-slate-900'}`}>
                                 {formatTime(timeLeft)}
                             </div>
 
                             <div className="max-w-lg mx-auto mb-14">
-                                <div className="w-full bg-slate-100 h-8 rounded-full overflow-hidden border-2 border-slate-200 p-1">
+                                <div className="w-full bg-slate-100 h-7 rounded-full overflow-hidden border-2 border-slate-200 p-1 shadow-inner">
                                     <div className={`h-full rounded-full transition-all duration-1000 ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'bg-red-500' : 'bg-[#FFE600]'}`} style={{ width: `${progress}%` }} />
                                 </div>
                             </div>
 
                             <div className="flex flex-wrap justify-center gap-5">
-                                <button onClick={handleReset} className="bg-slate-100 text-slate-700 px-8 py-5 rounded-2xl hover:bg-slate-200 transition-all font-black uppercase text-xs border-2 border-slate-200 flex items-center gap-3">
-                                    <i data-lucide="rotate-ccw" className="w-5 h-5"></i> Reset Geral
+                                <button onClick={handleReset} className="bg-slate-100 text-slate-700 px-8 py-5 rounded-2xl hover:bg-slate-200 transition-all font-black uppercase text-sm border-2 border-slate-200 flex items-center gap-3">
+                                    <i data-lucide="rotate-ccw" className="w-5 h-5"></i> Reset
                                 </button>
-                                <button onClick={handleToggleTimer} className={`px-16 py-6 rounded-2xl font-black uppercase text-lg flex items-center gap-4 btn-shadow transition-all active:scale-95 ${syncData.isRunning ? 'bg-[#3483FA] text-white' : 'bg-[#FFE600] text-slate-950'}`}>
-                                    {syncData.isRunning ? <><i data-lucide="pause" className="w-8 h-8 fill-current"></i> Pausar Tudo</> : <><i data-lucide="play" className="w-8 h-8 fill-current"></i> Iniciar Tudo</>}
+                                <button onClick={handleToggleTimer} className={`px-16 py-6 rounded-2xl font-black uppercase text-lg flex items-center gap-3 shadow-xl transition-all active:scale-95 ${syncData.isRunning ? 'bg-[#3483FA] text-white' : 'bg-[#FFE600] text-slate-950'}`}>
+                                    {syncData.isRunning ? <><i data-lucide="pause" className="w-8 h-8 fill-current"></i> Pausar</> : <><i data-lucide="play" className="w-8 h-8 fill-current"></i> Iniciar</>}
                                 </button>
                                 {timeLeft === 0 && syncData.activeWaveIndex < syncData.waves.length - 1 && (
-                                    <button onClick={handleNextWave} className="bg-[#3483FA] px-10 py-6 rounded-2xl font-black text-white shadow-xl animate-bounce uppercase text-sm border-b-4 border-blue-700">Próxima Onda</button>
+                                    <button onClick={handleNextWave} className="bg-[#3483FA] px-10 py-6 rounded-2xl font-black text-white shadow-xl animate-bounce uppercase">Próxima Onda</button>
                                 )}
                             </div>
                         </div>
@@ -392,7 +379,7 @@
                             <div key={w.id} className={`p-6 rounded-2xl border-2 transition-all ${i === syncData.activeWaveIndex ? 'border-[#FFE600] bg-white shadow-md scale-105' : i < syncData.activeWaveIndex ? 'border-transparent bg-slate-200/50 opacity-40 grayscale' : 'border-white bg-white opacity-80'}`}>
                                 <div className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">{i < syncData.activeWaveIndex ? 'OK' : i === syncData.activeWaveIndex ? 'Agora' : 'Fila'}</div>
                                 <div className="text-sm font-black text-slate-800 leading-tight">{w.name}</div>
-                                <div className="text-lg font-mono font-black text-ml-blue/60 mt-1">{w.startTime}</div>
+                                <div className="text-xl font-mono font-black text-[#3483FA]/70 leading-none mt-1">{w.startTime}</div>
                             </div>
                         ))}
                     </div>
