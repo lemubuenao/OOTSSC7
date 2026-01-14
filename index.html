@@ -5,23 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gestor de Ondas SSC7 - Mercado Livre</title>
     
-    <!-- Tailwind CSS para o design -->
+    <!-- Design e Estilo -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- React e Babel para processar o código no navegador -->
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
-    <!-- Ícones Lucide -->
-    <script src="https://unpkg.com/lucide@latest"></script>
-
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
         body { 
             font-family: 'Inter', sans-serif; 
-            -webkit-tap-highlight-color: transparent; 
-            background-color: #EBEBEB; 
+            background-color: #EBEBEB; /* Cinza oficial ML */
+            -webkit-tap-highlight-color: transparent;
         }
         .animate-progress { transition: width 1s linear; }
         .bg-ml-yellow { background-color: #FFE600; }
@@ -29,50 +20,51 @@
         .text-ml-blue { color: #3483FA; }
         .ml-card {
             background-color: #FFFFFF;
-            box-shadow: 0 1px 2px 0 rgba(0,0,0,.1);
+            box-shadow: 0 1px 3px 0 rgba(0,0,0,0.1), 0 1px 2px 0 rgba(0,0,0,0.06);
         }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
-    <!-- Scripts do Firebase (Versão Compatível com Browser) -->
+    <!-- Bibliotecas Essenciais -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, updateDoc, setDoc, serverTimestamp, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, updateDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // NOTA PARA GITHUB: Se os valores abaixo não forem injetados, substitua manualmente pelas suas credenciais do Firebase.
+        // CONFIGURAÇÃO FIREBASE: 
+        // Substitua os campos vazios "" pelos dados do seu console Firebase para que a sincronização funcione fora do Canvas.
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            apiKey: "SUA_API_KEY",
-            authDomain: "SEU_PROJETO.firebaseapp.com",
-            projectId: "SEU_PROJETO",
-            storageBucket: "SEU_PROJETO.appspot.com",
-            messagingSenderId: "SEU_ID",
-            appId: "SEU_APP_ID"
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: ""
         };
-        
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'waves-ssc7-lages';
 
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'waves-ssc7-lages';
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // Disponibiliza os serviços para o script Babel
-        window.FB_SERVICES = { 
-            auth, db, appId, serverTimestamp, doc, 
-            updateDoc, setDoc, onSnapshot, collection, 
-            signInAnonymously, signInWithCustomToken, onAuthStateChanged 
-        };
+        // Disponibilizar para o React (Babel)
+        window.FirebaseAPI = { auth, db, appId, serverTimestamp, doc, updateDoc, setDoc, onSnapshot, signInAnonymously, signInWithCustomToken, onAuthStateChanged };
     </script>
 
+    <!-- Lógica da Aplicação -->
     <script type="text/babel">
         const { useState, useEffect, useCallback, useRef } = React;
+        const { auth, db, appId, serverTimestamp, doc, updateDoc, setDoc, onSnapshot, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FirebaseAPI;
 
         const App = () => {
-            // Extrair serviços do Firebase injetados no window
-            const { auth, db, appId, serverTimestamp, doc, updateDoc, setDoc, onSnapshot, collection, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = window.FB_SERVICES;
-
             const [user, setUser] = useState(null);
             const [view, setView] = useState('timer');
             const [isMuted, setIsMuted] = useState(false);
@@ -104,87 +96,98 @@
             const [syncData, setSyncData] = useState(INITIAL_STATE);
             const [timeLeft, setTimeLeft] = useState(INITIAL_STATE.secondsRemainingOnPause);
             const lastAnnouncedTrigger = useRef(null);
+            const lastAutoStartTriggered = useRef("");
 
-            // Inicializar Lucide Icons após cada renderização
-            useEffect(() => {
-                if (window.lucide) window.lucide.createIcons();
-            });
-
-            // 1. Autenticação
+            // 1. Inicialização e Autenticação
             useEffect(() => {
                 const initAuth = async () => {
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    } catch (e) { console.error("Auth error:", e); }
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
                 };
                 initAuth();
                 onAuthStateChanged(auth, setUser);
+                
+                const loadVoices = () => {
+                    const v = window.speechSynthesis.getVoices().filter(x => x.lang.startsWith('pt'));
+                    setAvailableVoices(v);
+                    if (v.length > 0) setSelectedVoiceName(v[0].name);
+                };
+                loadVoices();
+                window.speechSynthesis.onvoiceschanged = loadVoices;
             }, []);
 
-            // 2. Sincronização Cloud
+            // 2. Sincronização Cloud (Firestore) - REGRA: Caminho com 6 segmentos
             useEffect(() => {
                 if (!user) return;
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'waves_config_v2', 'global');
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'waves_config_v4', 'global');
                 const unsubscribe = onSnapshot(docRef, (snap) => {
                     if (snap.exists()) {
                         setSyncData(snap.data());
                     } else {
                         setDoc(docRef, INITIAL_STATE);
                     }
-                }, (error) => console.error("Firestore error:", error));
+                });
                 return () => unsubscribe();
             }, [user]);
 
             // 3. Relógio e Início Automático
             useEffect(() => {
-                const timer = setInterval(() => {
-                    const nowStr = new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
+                const clockTimer = setInterval(() => {
+                    const now = new Date();
+                    const nowStr = now.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
                     setSystemTime(nowStr);
 
+                    // Lógica de Início Automático
                     if (syncData.isAutoStartEnabled && !syncData.isRunning && syncData.activeWaveIndex === 0 && timeLeft === syncData.waves[0].duration) {
-                        if (nowStr === syncData.scheduledStartTime) {
+                        if (nowStr === syncData.scheduledStartTime && lastAutoStartTriggered.current !== nowStr) {
+                            lastAutoStartTriggered.current = nowStr;
                             handleToggleTimer();
                         }
                     }
                 }, 1000);
-                return () => clearInterval(timer);
+                return () => clearInterval(clockTimer);
             }, [syncData, timeLeft]);
 
-            // 4. Temporizador Sincronizado
+            // 4. Lógica do Temporizador (Cálculo Sincronizado)
             useEffect(() => {
-                const interval = setInterval(() => {
+                const timerInterval = setInterval(() => {
                     if (syncData.isRunning && syncData.serverStartTime) {
                         const now = Date.now();
-                        const start = syncData.serverStartTime?.toMillis ? syncData.serverStartTime.toMillis() : (typeof syncData.serverStartTime === 'number' ? syncData.serverStartTime : now);
-                        const elapsed = Math.floor((now - start) / 1000);
-                        const remaining = Math.max(0, syncData.secondsRemainingOnPause - elapsed);
+                        // Suporta timestamp do Firestore ou número puro
+                        const startMillis = syncData.serverStartTime?.toMillis ? syncData.serverStartTime.toMillis() : syncData.serverStartTime;
+                        const elapsedSeconds = Math.floor((now - startMillis) / 1000);
+                        const remaining = Math.max(0, syncData.secondsRemainingOnPause - elapsedSeconds);
+                        
                         setTimeLeft(remaining);
-                        if (remaining === 0) handleAutoWaveComplete();
+                        
+                        if (remaining === 0) {
+                            handleAutoWaveComplete();
+                        }
                     } else {
                         setTimeLeft(syncData.secondsRemainingOnPause);
                     }
                 }, 1000);
-                return () => clearInterval(interval);
+                return () => clearInterval(timerInterval);
             }, [syncData]);
 
             // 5. Alertas Sonoros
             useEffect(() => {
                 if (!syncData.isRunning || timeLeft <= 0) return;
-                const triggerPoint = syncData.alarmTriggerMinutes * 60;
-                if (timeLeft <= triggerPoint) {
-                    const elapsed = triggerPoint - timeLeft;
-                    if (elapsed % syncData.alarmRepeatSeconds === 0 && lastAnnouncedTrigger.current !== timeLeft) {
+                const triggerSeconds = syncData.alarmTriggerMinutes * 60;
+                
+                if (timeLeft <= triggerSeconds) {
+                    const elapsedFromTrigger = triggerSeconds - timeLeft;
+                    if (elapsedFromTrigger % syncData.alarmRepeatSeconds === 0 && lastAnnouncedTrigger.current !== timeLeft) {
                         lastAnnouncedTrigger.current = timeLeft;
                         const mins = Math.floor(timeLeft / 60);
                         const secs = timeLeft % 60;
                         let msg = (mins > 0 ? `${mins} minuto${mins > 1 ? 's' : ''}` : "") + (secs > 0 ? ` e ${secs} segundos` : "");
                         
-                        if (syncData.isHornEnabled) playHorn();
-                        setTimeout(() => speak(`ATENÇÃO, ${syncData.waves[syncData.activeWaveIndex].name} prestes a acabar. Restam ${msg}.`), 700);
+                        playHorn();
+                        setTimeout(() => speak(`ATENÇÃO, ${syncData.waves[syncData.activeWaveIndex].name} prestes a acabar. Restam ${msg}.`), 800);
                     }
                 }
             }, [timeLeft, syncData.isRunning]);
@@ -210,7 +213,7 @@
             };
 
             const speak = (text) => {
-                if (isMuted) return;
+                if (isMuted || !text) return;
                 window.speechSynthesis.cancel();
                 const utter = new SpeechSynthesisUtterance(text);
                 const voice = availableVoices.find(v => v.name === selectedVoiceName);
@@ -221,8 +224,8 @@
 
             const updateCloud = async (updates) => {
                 if (!user) return;
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'waves_config_v2', 'global');
-                await updateDoc(docRef, updates);
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'waves_config_v4', 'global');
+                try { await updateDoc(docRef, updates); } catch(e) {}
             };
 
             const handleToggleTimer = () => {
@@ -232,7 +235,7 @@
                     if (timeLeft === syncData.waves[syncData.activeWaveIndex].duration) {
                         speak(`Iniciando a ${syncData.waves[syncData.activeWaveIndex].name}`);
                     }
-                    updateCloud({ isRunning: true, serverStartTime: serverTimestamp() });
+                    updateCloud({ isRunning: true, serverStartTime: Date.now() });
                 }
             };
 
@@ -252,7 +255,7 @@
                         isRunning: false,
                         serverStartTime: null
                     });
-                    speak(`Onda seguinte preparada.`);
+                    speak(`Próxima onda pronta.`);
                 }
             };
 
@@ -293,31 +296,22 @@
                 updateCloud({ scheduledStartTime: time, waves: newWaves });
             };
 
-            useEffect(() => {
-                const load = () => {
-                    const v = window.speechSynthesis.getVoices().filter(x => x.lang.startsWith('pt'));
-                    setAvailableVoices(v);
-                    if (v.length > 0 && !selectedVoiceName) setSelectedVoiceName(v[0].name);
-                };
-                load();
-                window.speechSynthesis.onvoiceschanged = load;
-            }, []);
-
             const formatTime = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
             const currentWave = syncData.waves[syncData.activeWaveIndex];
             const progress = ((currentWave.duration - timeLeft) / currentWave.duration) * 100;
 
+            // Interface de Configurações
             if (view === 'setup') {
                 return (
                     <div className="p-6 md:p-12 max-w-2xl mx-auto min-h-screen">
-                        <button onClick={() => setView('timer')} className="flex items-center gap-2 mb-8 text-slate-500 hover:text-slate-900 font-bold transition-colors">
-                            <i data-lucide="arrow-left" className="w-5 h-5"></i> Painel Principal
+                        <button onClick={() => setView('timer')} className="flex items-center gap-2 mb-8 text-slate-500 hover:text-slate-900 font-bold">
+                            <i data-lucide="arrow-left" className="w-5 h-5"></i> Voltar ao Painel
                         </button>
-                        <h1 className="text-3xl font-black mb-8 text-slate-900 uppercase">Configuração Nuvem</h1>
+                        <h1 className="text-3xl font-black mb-8 text-slate-900 uppercase">Configuração de Waves</h1>
                         <div className="ml-card border border-slate-200 p-8 rounded-xl shadow-sm space-y-8">
                             <div className="bg-slate-50 p-6 rounded-lg border border-[#3483FA]/20 space-y-4">
                                 <h3 className="text-xs font-black text-[#3483FA] flex items-center gap-2 uppercase tracking-widest">
-                                    <i data-lucide="calendar" className="w-4 h-4"></i> Horário Início Turno
+                                    <i data-lucide="calendar" className="w-4 h-4"></i> Início Turno
                                 </h3>
                                 <div className="flex gap-4">
                                     <input type="time" value={syncData.scheduledStartTime} onChange={(e) => handleUpdateStartTime(e.target.value)} className="bg-white p-3 rounded-lg border border-slate-300 focus:border-[#3483FA] outline-none font-bold text-xl w-full" />
@@ -328,40 +322,23 @@
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Alerta Inicial (min):</label>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Alerta (min):</label>
                                     <input type="number" step="0.5" value={syncData.alarmTriggerMinutes} onChange={e => updateCloud({ alarmTriggerMinutes: parseFloat(e.target.value) })} className="w-full p-3 rounded-lg border border-slate-300 font-bold" />
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Repete a cada (seg):</label>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Repete (seg):</label>
                                     <input type="number" value={syncData.alarmRepeatSeconds} onChange={e => updateCloud({ alarmRepeatSeconds: parseInt(e.target.value) })} className="w-full p-3 rounded-lg border border-slate-300 font-bold" />
                                 </div>
                             </div>
-                            <div className="space-y-4 pt-4 border-t">
-                                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-                                    <div className="flex items-center gap-3">
-                                        <i data-lucide="megaphone" className="w-5 h-5 text-slate-900"></i>
-                                        <span className="text-sm font-bold text-slate-700">Buzina Industrial Ativa</span>
-                                    </div>
-                                    <button onClick={() => updateCloud({ isHornEnabled: !syncData.isHornEnabled })} className={`w-12 h-6 rounded-full relative transition-colors ${syncData.isHornEnabled ? 'bg-[#3483FA]' : 'bg-slate-300'}`}>
-                                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${syncData.isHornEnabled ? 'left-7' : 'left-1'}`} />
-                                    </button>
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase">Voz do Locutor:</label>
-                                    <select value={selectedVoiceName} onChange={e => setSelectedVoiceName(e.target.value)} className="w-full p-3 rounded-lg border border-slate-300 font-bold text-sm">
-                                        {availableVoices.map(v => <option key={v.name}>{v.name}</option>)}
-                                    </select>
-                                </div>
-                            </div>
                             <div className="pt-6 border-t space-y-3">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Ajuste de Duração</h3>
+                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center mb-4 uppercase">Gestão de Duração (Minutos)</h3>
                                 {syncData.waves.map((w, i) => (
                                     <div key={w.id} className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
                                         <div className="w-24">
-                                            <p className="text-xs font-black text-slate-700">{w.name}</p>
+                                            <p className="text-sm font-black text-slate-700 leading-none mb-1">{w.name}</p>
                                             <p className="text-[9px] text-[#3483FA] font-bold">Início: {w.startTime}</p>
                                         </div>
-                                        <input type="number" value={w.duration / 60} onChange={(e) => handleUpdateDuration(i, parseFloat(e.target.value))} className="flex-1 p-2 rounded border border-slate-300 text-center font-black text-lg focus:border-[#3483FA] outline-none" />
+                                        <input type="number" value={w.duration / 60} onChange={(e) => handleUpdateDuration(i, parseFloat(e.target.value))} className="flex-1 p-2 rounded border text-center font-black text-lg focus:border-[#3483FA] outline-none" />
                                     </div>
                                 ))}
                             </div>
@@ -370,63 +347,59 @@
                 );
             }
 
+            // Painel Principal
             return (
-                <div className="p-4 md:p-12 max-w-5xl mx-auto min-h-screen" onClick={() => speak('')}>
+                <div className="p-4 md:p-12 max-w-5xl mx-auto min-h-screen" onClick={() => { if(window.lucide) window.lucide.createIcons(); speak(''); }}>
                     <header className="flex justify-between items-center mb-8 bg-[#FFE600] p-5 rounded-xl shadow-sm border-b-2 border-yellow-400">
                         <div className="flex items-center gap-4 text-slate-900">
-                            <div className="bg-white p-2 rounded-xl shadow-sm"><i data-lucide="package" className="w-7 h-7"></i></div>
+                            <div className="bg-white p-2 rounded-xl"><i data-lucide="package" className="w-7 h-7"></i></div>
                             <div>
-                                <h1 className="text-2xl font-black tracking-tighter leading-none uppercase">Waves SSC7</h1>
+                                <h1 className="text-2xl font-black uppercase tracking-tighter leading-none">Waves SSC7</h1>
                                 <p className="text-slate-800 text-[10px] font-black uppercase tracking-widest mt-1">Lages, SC • Cloud Sync</p>
                             </div>
                         </div>
                         <div className="flex gap-2">
                             <button onClick={() => setView('setup')} className="p-3 bg-white/30 rounded-lg hover:bg-white/50 text-slate-900 transition-all"><i data-lucide="settings" className="w-6 h-6"></i></button>
-                            <button onClick={() => setIsMuted(!isMuted)} className={`p-3 rounded-lg shadow-sm transition-all ${isMuted ? 'bg-red-500 text-white border-red-600' : 'bg-white text-slate-900'}`}>
-                                {isMuted ? <i data-lucide="volume-x" className="w-6 h-6"></i> : <i data-lucide="volume-2" className="w-6 h-6"></i>}
+                            <button onClick={() => setIsMuted(!isMuted)} className={`p-3 rounded-lg shadow-sm transition-all ${isMuted ? 'bg-red-500 text-white border-red-600' : 'bg-white text-slate-900 border-slate-200'}`}>
+                                <i data-lucide={isMuted ? "volume-x" : "volume-2"} className="w-6 h-6"></i>
                             </button>
                         </div>
                     </header>
 
                     <div className="ml-card border border-slate-200 rounded-2xl p-10 md:p-16 text-center relative shadow-sm overflow-hidden mb-8">
                         <div className="relative z-10">
-                            <div className="flex justify-center mb-8">
+                            <div className="flex justify-center items-center gap-3 mb-8">
                                 <span className={`px-6 py-2 rounded-full font-black uppercase tracking-widest text-xs border-2 ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'bg-red-500 text-white border-red-400 animate-pulse' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                                    {currentWave.name} em curso
+                                    {currentWave.name}
                                 </span>
+                                {syncData.isAutoStartEnabled && syncData.activeWaveIndex === 0 && !syncData.isRunning && (
+                                    <span className="bg-[#3483FA]/10 text-[#3483FA] px-4 py-2 rounded-full font-bold uppercase text-[10px] border border-[#3483FA]/20">Agenda: {syncData.scheduledStartTime}</span>
+                                )}
                             </div>
                             <div className={`text-[11rem] md:text-[14rem] font-black my-4 font-mono tracking-tighter leading-none transition-all ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'text-red-500 scale-105' : 'text-slate-900'}`}>
                                 {formatTime(timeLeft)}
                             </div>
                             <div className="max-w-lg mx-auto mb-14">
-                                <div className="w-full bg-slate-100 h-7 rounded-full overflow-hidden border-2 border-slate-200 p-1 shadow-inner">
-                                    <div 
-                                        className={`h-full rounded-full transition-all duration-1000 ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'bg-red-500' : 'bg-[#FFE600]'}`} 
-                                        style={{ width: `${progress}%` }} 
-                                    />
+                                <div className="w-full bg-slate-100 h-7 rounded-full overflow-hidden border-2 border-slate-200 p-1">
+                                    <div className={`h-full rounded-full transition-all duration-1000 ${timeLeft <= syncData.alarmTriggerMinutes * 60 ? 'bg-red-500' : 'bg-[#FFE600]'}`} style={{ width: `${progress}%` }} />
                                 </div>
                             </div>
                             <div className="flex flex-wrap justify-center gap-5">
-                                <button onClick={handleReset} className="bg-slate-100 text-slate-700 px-8 py-5 rounded-2xl hover:bg-slate-200 transition-all font-black uppercase text-sm border-2 border-slate-200 flex items-center gap-3">
-                                    <i data-lucide="rotate-ccw" className="w-5 h-5"></i> Reset
-                                </button>
-                                <button onClick={handleToggleTimer} className={`px-16 py-6 rounded-2xl font-black uppercase text-lg flex items-center gap-3 shadow-xl transition-all active:scale-95 ${syncData.isRunning ? 'bg-[#3483FA] text-white' : 'bg-[#FFE600] text-slate-950'}`}>
-                                    {syncData.isRunning ? <><i data-lucide="pause" className="w-7 h-7 fill-current"></i> Pausar</> : <><i data-lucide="play" className="w-7 h-7 fill-current"></i> Iniciar</>}
+                                <button onClick={handleReset} className="bg-slate-100 text-slate-700 px-8 py-5 rounded-2xl hover:bg-slate-200 transition-all font-black uppercase text-sm border-2 border-slate-200 flex items-center gap-3"><i data-lucide="rotate-ccw" className="w-5 h-5"></i> Reset</button>
+                                <button onClick={handleToggleTimer} className={`px-16 py-6 rounded-2xl font-black uppercase text-lg flex items-center gap-3 shadow-xl transition-all active:scale-95 ${syncData.isRunning ? 'bg-[#3483FA] text-white hover:bg-[#2a6fd6]' : 'bg-[#FFE600] text-slate-950 hover:brightness-105'}`}>
+                                    {syncData.isRunning ? <><i data-lucide="pause" className="w-8 h-8 fill-current"></i> Pausar</> : <><i data-lucide="play" className="w-8 h-8 fill-current"></i> Iniciar</>}
                                 </button>
                                 {timeLeft === 0 && syncData.activeWaveIndex < syncData.waves.length - 1 && (
-                                    <button onClick={handleNextWave} className="bg-[#3483FA] px-10 py-6 rounded-2xl font-black text-white shadow-xl animate-bounce uppercase border-b-4 border-blue-700">Próxima Onda</button>
+                                    <button onClick={handleNextWave} className="bg-[#3483FA] px-10 py-6 rounded-2xl font-black text-white shadow-xl animate-bounce uppercase">Próxima Onda</button>
                                 )}
                             </div>
-                        </div>
-                        <div className="absolute -bottom-20 -right-20 opacity-[0.05] rotate-12 pointer-events-none text-slate-900">
-                            <i data-lucide="package" className="w-[500px] h-[500px]"></i>
                         </div>
                     </div>
 
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
                         {syncData.waves.map((w, i) => (
                             <div key={w.id} className={`p-6 rounded-2xl border-2 transition-all ${i === syncData.activeWaveIndex ? 'border-[#FFE600] bg-white shadow-md scale-105' : i < syncData.activeWaveIndex ? 'border-transparent bg-slate-200/50 opacity-40 grayscale' : 'border-white bg-white opacity-80'}`}>
-                                <div className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">{i < syncData.activeWaveIndex ? 'Ok' : i === syncData.activeWaveIndex ? 'Agora' : 'Fila'}</div>
+                                <div className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">{i < syncData.activeWaveIndex ? 'OK' : i === syncData.activeWaveIndex ? 'Agora' : 'Fila'}</div>
                                 <div className="text-sm font-black text-slate-800 leading-tight">{w.name}</div>
                                 <div className="text-xl font-mono font-black text-[#3483FA]/70 leading-none mt-1">{w.startTime}</div>
                             </div>
